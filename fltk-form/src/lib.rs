@@ -17,7 +17,7 @@
     extern crate fltk_form_derive;
 
     use fltk::{prelude::*, *};
-    use fltk_form::{FltkForm, HasProps, FlImage};
+    use fltk_form::{FltkForm, HasProps, FlImage, FlHexaColor};
 
     #[derive(Copy, Debug, Clone, FltkForm)]
     pub enum MyEnum {
@@ -34,6 +34,7 @@
         d: MyEnum,
         e: bool,
         f:FlImage,
+        g:FlHexaColor,
     }
 
     impl MyStruct {
@@ -45,6 +46,7 @@
                 d: MyEnum::A,
                 e: true,
                 f:FlImage(String::from("examples/orange_circle.svg")),
+                g:FlHexaColor(String::from("#663399")),
             }
         }
     }
@@ -69,6 +71,7 @@
         grp.set_frame(enums::FrameType::EngravedFrame);
         win.end();
         win.show();
+        win.make_resizable(true);
 
         let v = form.get_prop("b");
         assert_eq!(v, Some("3.0".to_owned()));
@@ -84,55 +87,74 @@
     ```
 */
 
-use fltk::{prelude::*, image::*, *};
+use fltk::{image::*, prelude::*, *};
 use std::collections::HashMap;
 use std::fmt;
-use std::fs;
-
 use std::mem::transmute;
+use std::path::Path;
 
-pub fn make_image(filename:&str) -> Option<SharedImage> {
-    let mut image_filename:String = match fs::canonicalize(filename) {
-        Ok(image_filename) => image_filename.to_str().unwrap().to_owned(),
-        Err(e) => {
-            println!("ERROR: {:?}\nFilename:{:?}",e, filename);
-            return None
-        },
-    };
-    println!("image:{:?}",image_filename);
-    let mut image = SharedImage::load(image_filename.as_str());
-    if image.is_ok() {
-        let current_image = image.ok().unwrap();
-        return Some(current_image)
-    }
-    None
-}
-pub fn make_frame(filename:&str) -> frame::Frame {
+pub fn make_image_frame<P: AsRef<Path>>(filename: P) -> frame::Frame {
     let mut frame = frame::Frame::default();
-    let img = make_image(filename.clone());
-    frame.set_image(img.clone());
-    if let Some(img) = img {
+    frame.set_tooltip(filename.as_ref().to_str().unwrap());
+    let img = SharedImage::load(filename).ok();
+    if let Some(ref img) = img {
         let w = img.width();
         let h = img.height();
-        frame.set_size(w,h);
-        println!("some img");
+        frame.set_size(w, h);
     }
-    frame.clone()
+    frame.set_image(img);
+    frame
 }
+
+pub fn color_button(color:&str) -> button::Button {
+    let val = enums::Color::from_hex_str(color);
+    let mut b = button::Button::default();
+
+    let rgb = match val {
+        Ok(rgb) => rgb.to_rgb(),
+        Err(_e) => (102,51,153),
+    };
+    b.set_color(enums::Color::from_rgb(rgb.0, rgb.1, rgb.2));
+    b.set_callback(|this| {
+        let color = this.color();
+        let label = enums::Color::to_hex_str(&color);
+        let c = dialog::color_chooser_with_default(label.as_str(), dialog::ColorMode::Hex, color.to_rgb());
+        let color = enums::Color::from_rgb(c.0, c.1, c.2);
+        this.set_color(color);
+    });
+    b
+}
+
 #[derive(Debug, Clone)]
 pub struct FlImage(pub String);
 impl fmt::Display for FlImage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let v:String;
-        match &*self {
-            FlImage(e) => v = e.clone(),
-        }
-        write!(f, "{}", v.as_str())
+        write!(f, "{}", self.0)
     }
 }
+
+#[derive(Debug, Clone)]
+/*
+# FlHexaColor
+
+Create a color chooser popup dialog
+```
+FlHexaColor(String::from("#663399"))
+
+Will create a colored
+```
+*/
+pub struct FlHexaColor(pub String);
+impl fmt::Display for FlHexaColor {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FltkFormError {
+    FltkError(FltkErrorKind),
     Internal(FltkFormErrorKind),
     Unknown(String),
 }
@@ -157,6 +179,7 @@ impl fmt::Display for FltkFormError {
         match *self {
             FltkFormError::Internal(ref err) => write!(f, "An internal error occured {:?}", err),
             FltkFormError::Unknown(ref err) => write!(f, "An unknown error occurred {:?}", err),
+            FltkFormError::FltkError(ref err) => write!(f, "an fltk error occured {:?}", err),
         }
     }
 }
@@ -239,7 +262,10 @@ impl Form {
                                 return choice.choice();
                             }
                             _ => {
-                                return None;
+                                let wid = unsafe {
+                                    widget::Widget::from_widget_ptr(child.as_widget_ptr() as _)
+                                };
+                                return Some(format!("{}", wid.label()));
                             }
                         }
                     }
@@ -339,24 +365,40 @@ pub trait FltkForm {
     fn generate(&self) -> Box<dyn WidgetExt>;
     fn view(&self) -> Box<dyn WidgetExt>;
 }
-impl FltkForm for FlImage {
+
+impl FltkForm for FlHexaColor {
     fn generate(&self) -> Box<dyn WidgetExt> {
         let val = format!("{}", *self);
-        let mut i = make_frame(val.as_str());
-        unsafe {
-            i.set_raw_user_data(transmute(1_usize));
-        }
+        let mut i = color_button(val.as_str());
         Box::new(i)
     }
     fn view(&self) -> Box<dyn WidgetExt> {
         let val = format!("{}", *self);
-        let mut i = make_frame(val.as_str());
+        let mut i = output::Output::default();
+        match enums::Color::from_hex_str(val.as_str()) {
+            Ok(v) => i.set_color(v),
+            Err(e) => println!("Error: {:?}, encountered with color {:?}", e, val.as_str()),
+        };
+        i.set_value(&val);
         unsafe {
             i.set_raw_user_data(transmute(1_usize));
         }
         Box::new(i)
     }
 }
+impl FltkForm for FlImage {
+    fn generate(&self) -> Box<dyn WidgetExt> {
+        let val = format!("{}", *self);
+        let mut i = make_image_frame(val.as_str());
+        Box::new(i)
+    }
+    fn view(&self) -> Box<dyn WidgetExt> {
+        let val = format!("{}", *self);
+        let mut i = make_image_frame(val.as_str());
+        Box::new(i)
+    }
+}
+
 impl FltkForm for f64 {
     fn generate(&self) -> Box<dyn WidgetExt> {
         let mut i = input::FloatInput::default();
@@ -729,7 +771,10 @@ fn get_prop_(wid: &Box<dyn WidgetExt>, prop: &str) -> Option<String> {
                         return choice.choice();
                     }
                     _ => {
-                        return None;
+                        let wid = unsafe {
+                            widget::Widget::from_widget_ptr(child.as_widget_ptr() as _)
+                        };
+                        return Some(format!("{}", wid.label()));
                     }
                 }
             }
